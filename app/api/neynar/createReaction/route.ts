@@ -1,7 +1,8 @@
-import verifySignerUUID from '@/lib/neynar/verifySigner';
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
-import { Item } from '@/types/Item';
+import { VERCEL_URL } from '@/lib/consts';
+import { Signer } from '@neynar/nodejs-sdk/build/neynar-api/v2';
+import axios from 'axios';
 
 const SUPABASE_URL = process.env.SUPABASE_URL as string;
 const SUPABASE_KEY = process.env.SUPABASE_KEY as string;
@@ -10,7 +11,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const getResponse = async (req: NextRequest): Promise<NextResponse> => {
   const body = await req.json();
-  const { signer_uuid, reaction_type, target } = body;
+  const { signer, reaction_type, target } = body;
+  const { signer_uuid } = signer as Signer;
+
 
   const options = {
     method: 'POST',
@@ -26,44 +29,46 @@ const getResponse = async (req: NextRequest): Promise<NextResponse> => {
     }),
   } as any;
 
-  const queryParams = new URLSearchParams({
-    identifier: target,
-    type: 'hash',
-  });
-
-  const castOptions = {
-    method: 'GET',
-    headers: { accept: 'application/json', api_key: process.env.NEYNAR_API_KEY },
-  } as any;
-
-  const verify = await verifySignerUUID(signer_uuid);
-
-  const fid = verify.fid;
-
   try {
-    const castResponse = await fetch(
-      `https://api.neynar.com/v2/farcaster/cast?${queryParams}`,
-      castOptions,
-    );
-    const castData = await castResponse.json();
+    const queryParams = new URLSearchParams({
+      hash: target,
+      viewer_fid: signer?.fid,
+    });
 
-    let likes_count = castData.cast.reactions.likes.length;
-    const isFidIncluded = castData.cast.reactions.likes.some((item: Item) => item.fid === fid);
 
-    if (!isFidIncluded) {
-      await fetch(`https://api.neynar.com/v2/farcaster/reaction?`, options);
+    const response =   await axios({
+      method: "GET",
+      url:  `${VERCEL_URL}/api/neynar/getCastLikes?${queryParams}`,
+      headers: { accept: 'application/json', api_key: process.env.NEYNAR_API_KEY },
+    }).then(function (response) {
+      return response.data;
+    });
 
-      likes_count++;
-      await supabase.from('posts').upsert(
-        {
-          post_hash: target,
-          likes: likes_count,
-        },
-        {
-          onConflict: 'post_hash',
-        },
-      );
+   console.log(response)
+   console.log(target)
+
+
+    const data = await response;
+    let likes_count = data.likes_count;
+    console.log(data.viewContext)
+    const viewContext = data.viewContext;
+   
+    if (!viewContext) {
+        likes_count++
+        await fetch(`https://api.neynar.com/v2/farcaster/reaction?`, options)
+        .then(res => res.json())
+        .then(json => json)
+        .catch(err => console.error('error:' + err));
     }
+    await supabase.from('posts').upsert(
+      {
+        post_hash: target,
+        likes: likes_count,
+      },
+      {
+        onConflict: 'post_hash',
+      },
+    );
 
     return NextResponse.json({ success: true, likes: likes_count }, { status: 200 });
   } catch (error) {
